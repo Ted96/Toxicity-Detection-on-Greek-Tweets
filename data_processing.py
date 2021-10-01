@@ -14,23 +14,30 @@ class dataset_loader:
 
 	def __init__(self, dataset: str):
 		self.__which_dataset: str = dataset
-		if dataset == 'ogtd':
-			self.df = pd.read_csv('datasets/ogtd/train.tsv', delimiter='\t', names=['id', 'text', 'label'], header=0)
-			self.df_labels = pd.read_csv('datasets/ogtd/test_labels.csv', names=['id', 'label'])
-			self.df_test = pd.read_csv('datasets/ogtd/test.tsv', delimiter='\t', names=['id', 'text'], header=0)
+		if dataset.lower() == 'ogtd':
+			__path_dtr = 'datasets/ogtd/offenseval-gr-training-v1.tsv'
+			__path_dte = 'datasets/ogtd/offenseval-gr-test-v1.tsv'
+			__path_lbl = 'datasets/ogtd/offenseval-gr-labela-v1.csv'
+		elif dataset.lower() == 'olid':
+			__path_dtr = 'datasets/olid/olid-training-v1.0.tsv'
+			__path_dte = 'datasets/olid/testset-levela.tsv'
+			__path_lbl = 'datasets/olid/labels-levela.csv'
+		else:
+			raise Exception("Supported Datasets=  'ogtd' , 'olid'")
+		
+		self.df = pd.read_csv(__path_dtr, delimiter='\t', usecols=['id', 'tweet', 'subtask_a'], header=0)
+		self.df_test = pd.read_csv(__path_dte, delimiter='\t', usecols=['id', 'tweet'], header=0)
+		self.df_labels = pd.read_csv(__path_lbl , names=['id', 'subtask_a'])
 
-			self.df_test = self.df_test.merge(self.df_labels, on='id')
-
-			self.df_test['label'] = self.df_test['label'].apply(lambda value:1 if value == 'OFF' else 0 if value == 'NOT' else -1)
-			self.df['label'] = 		self.df['label']	 .apply(lambda value:1 if value == 'OFF' else 0 if value == 'NOT' else -1)
-			del self.df_labels
-
-		if dataset == 'jigsaw18':
-			self.df = pd.read_csv('datasets/jigsaw18/train.csv')
-			self.df = self.df.sample(frac=0.2).rename(columns={'comment_text':'text'})
-
-		self.x_train, self.x_test = self.df['text'].to_numpy(), self.df_test['text'].to_numpy()
-		self.y_train, self.y_test = self.df['label'].to_numpy(), self.df_test['label'].to_numpy()
+		self.df_test = self.df_test.merge(self.df_labels, on='id')
+		del self.df_labels
+		self.df_test['subtask_a'] = self.df_test['subtask_a'].apply(lambda value:1 if value == 'OFF' else 0)
+		self.df['subtask_a'] = 		self.df['subtask_a']	 .apply(lambda value:1 if value == 'OFF' else 0)
+		
+		self.x_train = self.df['tweet'].to_numpy()
+		self.y_train = self.df['subtask_a'].to_numpy()
+		self.x_test = self.df_test['tweet'].to_numpy()
+		self.y_test = self.df_test['subtask_a'].to_numpy()
 		self.x_val, self.y_val = [], []
 
 		self.class_weights = dict(enumerate(class_weight.compute_class_weight('balanced', classes=np.unique(self.y_train), y=self.y_train)))
@@ -40,7 +47,7 @@ class dataset_loader:
 		self.__init__(new_dataset if new_dataset else self.__which_dataset)
 		return self
 
-	def clean_data(self, remove_urls=True, remove_hastags=True, remove_accents=True):
+	def clean_data(self, remove_urls=True, remove_hastags=True, remove_accents=True, to_lower=False):
 
 		def clean_text(txt: str):
 			if remove_hastags:
@@ -49,7 +56,8 @@ class dataset_loader:
 				txt = re.sub('http\S+', '', txt)
 			if remove_accents:
 				txt = remove_greek_accents(txt)
-
+			if to_lower:
+				txt=txt.lower()
 			return txt
 
 		for _list in self.x_train, self.x_test:
@@ -86,8 +94,6 @@ class dataset_loader:
 
 	def get_XY_lists(self, split_val=0.0) -> (List, List, List, List, List, List):
 		# doesnt affect dataframes
-		# x_train, x_test = self.df['text'].tolist(), self.df_test['text'].tolist()
-		# y_train, y_test = self.df['label'].tolist(), self.df_test['label'].tolist()
 
 		if split_val == 0:
 			return self.x_train, self.y_train, self.x_val, self.y_val, self.x_test, self.y_test
@@ -167,6 +173,8 @@ def fast_encode(texts: List[str], tokenizer, max_length=128, chunk_size=256) -> 
 	return np.array(all_ids)
 
 
+
+
 def load_embeddings(word_index, embedding_file: str):
 	embeddings_index = {}
 
@@ -219,3 +227,25 @@ def load_embeddings(word_index, embedding_file: str):
 # 	embedding_matrix = load_embeddings(word_index, embedding_file)
 # 	
 # 	return x_train , x_test,embedding_matrix
+# 
+
+# preprocess todo: clean these:  ' " `  << >> - $
+
+# def test(x):
+# 	puncts = [
+# 		'*', '+', '\\', '•', '~', '£',
+# 		'·', '_', '{', '}', '©', '^', '®', '`', '<', '→', '°', '€', '™', '›', '♥', '←', '×', '§', '″', '′', 'Â',
+# 		'█', '½', 'à', '…',
+# 		'“', '★', '”', '–', '●', 'â', '►', '−', '¢', '²', '¬', '░', '¶', '↑', '±', '¿', '▾', '═', '¦', '║', '―',
+# 		'¥', '▓', '—', '‹', '─',
+# 		'▒', '：', '¼', '⊕', '▼', '▪', '†', '■', '’', '▀', '¨', '▄', '♫', '☆', 'é', '¯', '♦', '¤', '▲', 'è', '¸',
+# 		'¾', 'Ã', '⋅', '‘', '∞',
+# 		'∙', '）', '↓', '、', '│', '（', '»', '，', '♪', '╩', '╚', '³', '・', '╦', '╣', '╔', '╗', '▬', '❤', 'ï', 'Ø',
+# 		'¹', '≤', '‡', '√', ]
+# 
+# 	total = []
+# 	for i in puncts:
+# 		if i in x:
+# 			total.append(i)
+# 
+# 	return total

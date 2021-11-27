@@ -1,107 +1,82 @@
-# bert transformers
+##https://github.com/Ted96/Toxicity-Detection-on-Greek-Tweets
+# bert transformers 
 from typing import Tuple
 
+import focal_loss
+import tensorflow.python.keras.layers
+from kerastuner import HyperModel
+from tensorflow.python.ops.linalg_ops import self_adjoint_eig
 from tensorflow_addons.metrics import F1Score
 import numpy as np
 import tensorflow.keras.backend as K
 from keras.layers import Input
-from sklearn.metrics import f1_score, recall_score, precision_score
+from sklearn.metrics import recall_score, precision_score
 from tensorflow.keras import Model
-from tensorflow.keras.losses import SparseCategoricalCrossentropy
-from tensorflow.keras.metrics import AUC,BinaryAccuracy
+from tensorflow.keras.losses import SparseCategoricalCrossentropy, BinaryCrossentropy
+from tensorflow.keras.metrics import AUC, BinaryAccuracy
 from tensorflow.keras.optimizers import Adam
+# from tensorflow_addons.optimizers import AdamW
 from tensorflow.python.keras.callbacks import Callback
 from tensorflow.python.keras.layers import Dropout, Embedding, SpatialDropout1D, Bidirectional, GRU, GlobalMaxPooling1D, concatenate, GlobalAveragePooling1D,\
 	Dense, BatchNormalization
 
-
-#f1 loss https://www.kaggle.com/rejpalcz/best-loss-function-for-f1-score-metric
+# f1 loss https://www.kaggle.com/rejpalcz/best-loss-function-for-f1-score-metric
 
 # https://www.kaggle.com/gtskyler/toxic-comments-bert/notebook
+from transformers import TFBertModel, TFAutoModelForSequenceClassification, TFAutoModel, AdamWeightDecay, logging
+
+
+logging.set_verbosity_error()
+
 metric_auc = AUC(curve='ROC', name='AUC')
 metric_aupr = AUC(curve='PR', name='AUPR')
-metric_f1 = F1Score(num_classes=1,average='macro',name='F1')
+metric_f1 = F1Score(num_classes=1, average='macro', name='f1')
 metric_acc = BinaryAccuracy(name='acc')
 
-class my_metrics(Callback):
+def model_bert_focalloss(transformer, class_weights, LR=1e-5, name: str = None) -> Model:
+	# input = ID + attention_mask
 
-	def __init__(self,validation_data:Tuple):
-		super().__init__()
-		self.x_val = validation_data[0]
-		self.y_val = validation_data[1]
-		self.val_precisions = []
-		#self.val_recalls = []
-		#self.val_f1s = []
-	
-	def on_epoch_end(self, epoch, logs={}):
-		val_predict = (np.asarray(self.model.predict(self.x_val))).round()
-
-		_val_f1 = round(f1_score(self.y_val, val_predict, average='macro'),3)
-		self.val_f1s.append(_val_f1)
-
-		#_val_recall = round(recall_score(val_targ, val_predict),3)
-		#self.val_recalls.append(_val_recall)
-		
-		#_val_precision = round(precision_score(val_targ, val_predict),3)
-		#self.val_precisions.append(_val_precision)
-		
-#		print(" — val_f1: % f — val_precision: % f — val_recall % f" % (_val_f1, _val_precision, _val_recall))
-		print(" — val_f1: %f " % _val_f1)
-
-		return
-	
-
-def recall(y_true, y_pred):
-	true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
-	all_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
-
-	recall = true_positives / (all_positives + K.epsilon())
-	return recall
-
-def precision(y_true, y_pred):
-	true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
-	predicted_positives = K.sum(K.round(K.clip(y_pred, 0, 1)))
-	precision = true_positives / (predicted_positives + K.epsilon())
-	return precision
-
-def f1(y_true, y_pred):
-	p = precision(y_true, y_pred)
-	r = recall(y_true, y_pred)
-	return 2 * ((p * r) / (p + r + K.epsilon()))
-
-
-def bert_4SequenceCLFN(transformer, LR=1e-4, name:str=None):
-	
 	transformer.compile(
 		optimizer=Adam(learning_rate=LR),
-		loss=SparseCategoricalCrossentropy(from_logits=True),
-		metrics=['accuracy']
+		loss=focal_loss.SparseCategoricalFocalLoss(gamma=2., class_weight=class_weights, from_logits=True),
+		metrics=[metric_acc]
 	)
-	transformer._name =  'Bert_4SequenceCLFN_pure' if name is None else name
+	transformer._name = 'Bert_sqCLF_focal_LR%.0e' % LR if name is None else name
 	return transformer
 
-def bert_model1(transformer,  LR=1e-5, max_length=64, name:str = None) -> Model:
 
+def bert_4SequenceCLFN(transformer, LR=1e-4, name: str = None) -> Model:
+	transformer.compile(
+		optimizer=Adam(learning_rate=LR),
+		loss=BinaryCrossentropy(from_logits=False),  # true
+		metrics=[metric_acc]
+	)
+	transformer._name = 'Bert_4sqncCLFN_LR%.0e' % LR if name is None else name
+	return transformer
+
+
+def bert_model_MLP(transformer, LR=1e-5, max_length=64, name: str = None) -> Model:
 	# input = ID + attention_mask
 	_ids = Input(shape=(max_length,), name='input_ids', dtype='int32')
 	_attention_mask = Input(shape=(max_length,), name='attention_mask', dtype='int32')
-	
+
 	__in = {'input_ids':_ids, 'attention_mask':_attention_mask}
-	
-	x = transformer.bert(__in)[0]
-	cls_token = x[:,0,:]
-	x = Dropout(rate=0.3)(cls_token)
+	x = transformer(__in)[0]  # or transformer.bert
+	cls_token = x[:, 0, :]
+	x = Dropout(rate=0.25)(cls_token)
 	x = Dense(256, activation='relu', name='Dense_0')(x)
 	x = BatchNormalization(name='BN_0')(x)
-	x = Dropout(rate=0.3)(x)
-	
+	x = Dropout(rate=0.35)(x)
+	x = Dense(32, activation='relu', name='Dense_1')(x)
+	x = BatchNormalization(name='BN_1')(x)
+	x = Dropout(rate=0.25)(x)
 	__out = Dense(1, activation='sigmoid', name='output')(x)
 
 	model = Model(inputs=__in, outputs=__out)
 	model.compile(loss='binary_crossentropy',
 				  optimizer=Adam(lr=LR),
-				  metrics=[metric_acc, f1])
-	model._name =  'Bert_mlp256_LR%.0e'%LR if name is None else name
+				  metrics=[metric_acc])
+	model._name = 'Bert_CLS_mlp_LR%.0e' % LR if name is None else name
 
 	return model
 
@@ -122,74 +97,74 @@ def model_bert_globalavgpool(transformer, max_length=64) -> Model:
 	model = Model(inputs=__in, outputs=__out)
 	model.compile(loss='binary_crossentropy',
 				  optimizer=Adam(lr=1e-5),
-				  metrics=[metric_acc, f1])
+				  metrics=[metric_acc])
 	return model
 
 
-def bert_model2(transformer, max_length=64) -> Model:
-	_ids = Input(shape=(max_length,), name='input_ids', dtype='int32')
-
-	x = transformer(_ids)[0]
-	x = x[:, 0, :] # cls token
+def bert_model_simple(transformer, LR=1e-5) -> Model:
+	try:
+		transformer.layers[2].activation = tensorflow.nn.sigmoid
+	except IndexError:
+		transformer.layers[1]._layers[2].activation = tensorflow.nn.sigmoid
 	
-	__out = Dense(1, activation='sigmoid', name='output')(x)
-
-	model = Model(inputs=_ids, outputs=__out)
-	model.compile(Adam(lr=1e-5),
-				  loss='binary_crossentropy',
-				  metrics=[metric_acc, f1])
-
-	return model
+	transformer = transformer
+	transformer.compile(optimizer=Adam(learning_rate=LR),
+				  loss=BinaryCrossentropy(from_logits=False),  # true
+				  metrics=[metric_aupr],
+				#run_eagerly=True
+				  )
+	transformer._name = 'Bert_simple_LR%.0e' % LR
+	return transformer
 
 
 # https://www.kaggle.com/akshat0007/bert-using-tensorflow-jigsaw-toxic-comment-data
 
-def bert_model3(transformer, max_length=64) -> Model:
-	_ids = Input(shape=(max_length,), name='input_ids', dtype='int32')
-
-	x = transformer(_ids)[0][:, 0, :]  # cls token
-	
-	x = Dense(256, activation='relu' , name='Dense_0')(x)
-	x = BatchNormalization(name='BN_0')(x)
-	x= Dropout(rate=0.3)(x)
-	
-	x = Dense(64, activation='relu', name='Dense_1')(x)
-	x = BatchNormalization(name='BN_1')(x)
-	x = Dropout(rate=0.3)(x)
-
-	__out = Dense(1, activation='sigmoid', name='output')(x)
-
-	model = Model(inputs=_ids, outputs=__out)
-	model.compile(Adam(lr=1e-4),
-				  loss='binary_crossentropy',
-				  metrics=[metric_acc, f1])
-
-	return model
-
-
-def model_gru(maxlen, vocab_size, embedding_matrix:np.ndarray , trainable_embeddings=True):
+def model_gru(maxlen, embedding_matrix: np.ndarray, LR=5e-4, trainable_embeddings=True, name: str = None):
 	K.clear_session()
-	
+
 	__in = Input(shape=(maxlen,))
-	x = Embedding(vocab_size, 
+	x = Embedding(embedding_matrix.shape[0],
 				  embedding_matrix.shape[1],
 				  weights=[embedding_matrix],
 				  input_length=maxlen,
 				  trainable=trainable_embeddings)(__in)
-	x = SpatialDropout1D(0.2)(x)
+	x = SpatialDropout1D(0.3)(x)
 	x = Bidirectional(GRU(80, return_sequences=True))(x)
 	x = Bidirectional(GRU(80, return_sequences=True))(x)
 	avg_pool = GlobalAveragePooling1D()(x)
 	max_pool = GlobalMaxPooling1D()(x)
 	x = concatenate([avg_pool, max_pool])
-	x = Dense(128, activation='relu', name='Dense_1')(x)
+	x = Dense(256, activation='relu', name='Dense_1')(x)
 	x = Dropout(rate=0.2)(x)
-	
+
 	__out = Dense(1, activation='sigmoid')(x)
 
 	model = Model(inputs=__in, outputs=__out)
-	model.compile(optimizer=Adam(lr=5e-4), 
+	model.compile(optimizer=Adam(lr=LR),
 				  loss='binary_crossentropy',
-				  metrics=[metric_acc,f1])
+				  metrics=[metric_acc])
+	model._name = 'GRU_LR%.0e' % LR if name is None else name
+
+	return model
+
+
+def clear_vram(model=None, transformer=None):
+	import gc
+	from tensorflow.keras import backend as K
+
+	if model:
+		del model
+	if transformer:
+		del transformer
+	K.clear_session()
+	gc.collect()
+
+def load_model( _bert:str ,len_tokenizer, path_weights :str=None,LR =1e-5 , trainable=True)->Model:
 	
+	bert = TFAutoModelForSequenceClassification.from_pretrained(_bert, num_labels=1)
+	bert.resize_token_embeddings(len_tokenizer)
+	model = bert_model_simple(bert, LR=LR)
+	if path_weights is not None:
+		model.load_weights(filepath=path_weights)
+	model.optimizer.lr.assign(LR)
 	return model
